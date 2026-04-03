@@ -13,7 +13,7 @@ from ta.volatility import BollingerBands
 # --- 0. 基礎設定 ---
 tw_tz = pytz.timezone('Asia/Taipei')
 
-# Cookie 管理（每個瀏覽器各自獨立）
+# Cookie 管理
 cookies = CookieManager(prefix="twstock_")
 if not cookies.ready():
     st.stop()
@@ -75,41 +75,53 @@ def fetch_and_analyze(stock_id):
     low = pd.Series(df['Low'].values.flatten(), index=df.index).astype(float)
 
     try:
-        try:
-            df['MA5'] = SMAIndicator(close, window=5).sma_indicator()
-            df['MA10'] = SMAIndicator(close, window=10).sma_indicator()
-            df['MA20'] = SMAIndicator(close, window=20).sma_indicator()
-            stoch = StochasticOscillator(high, low, close, window=9)
-            df['K']=stoch.stoch(); df['D']=stoch.stoch_signal()
-            df['MACD_diff'] = MACD(close, window_slow=26, window_fast=12, window_sign=9).macd_diff()
-            df['RSI'] = RSIIndicator(close, window=14).rsi()
-            df['BBM'] = BollingerBands(close, window=20).bollinger_mavg()
-        except:
-            df['MA5'] = SMAIndicator(close, n=5).sma_indicator()
-            df['MA10'] = SMAIndicator(close, n=10).sma_indicator()
-            df['MA20'] = SMAIndicator(close, n=20).sma_indicator()
-            stoch = StochasticOscillator(high, low, close, n=9)
-            df['K']=stoch.stoch(); df['D']=stoch.stoch_signal()
-            df['MACD_diff'] = MACD(close, n_slow=26, n_fast=12, n_sign=9).macd_diff()
-            df['RSI'] = RSIIndicator(close, n=14).rsi()
-            df['BBM'] = BollingerBands(close, n=20).bollinger_mavg()
+        # 計算技術指標
+        df['MA5'] = SMAIndicator(close, window=5).sma_indicator()
+        df['MA10'] = SMAIndicator(close, window=10).sma_indicator()
+        df['MA20'] = SMAIndicator(close, window=20).sma_indicator()
+        stoch = StochasticOscillator(high, low, close, window=9, window_context=3)
+        df['K']=stoch.stoch(); df['D']=stoch.stoch_signal()
+        df['MACD_diff'] = MACD(close, window_slow=26, window_fast=12, window_sign=9).macd_diff()
+        df['RSI'] = RSIIndicator(close, window=14).rsi()
+        df['BBM'] = BollingerBands(close, window=20).bollinger_mavg()
     except: return None
 
     last = df.iloc[-1]; prev = df.iloc[-2]
     score = 0
     details = []
 
+    # A. 均線判斷
     if last['MA5'] > last['MA10'] > last['MA20']:
         details.append("✅ 均線多頭排列"); score += 1
-    if last['K'] > last['D'] and last['K'] > 20:
-        details.append("✅ KD 黃金交叉"); score += 1
+
+    # B. 進階 KD 判斷邏輯 (依據使用者直覺優化)
+    # 1. 必須是今日才發生的「黃金交叉」
+    is_gold_cross = prev['K'] <= prev['D'] and last['K'] > last['D']
+    # 2. 篩選優質交叉區間 (25以下低檔 或 50以上轉強) 且 排除 80 以上高檔過熱
+    if is_gold_cross and last['K'] < 80:
+        if last['K'] < 25:
+            details.append("🌟 低檔強勢金叉"); score += 1
+        elif last['K'] > 50:
+            details.append("✅ 轉強黃金交叉"); score += 1
+    
+    # 3. 額外偵測：低檔鈍化警告 (不加分，僅提醒)
+    low_blunt = (df['K'].iloc[-3:] < 20).all()
+    if low_blunt:
+        details.append("⚠️ 低檔鈍化警告")
+
+    # C. MACD 判斷
     if last['MACD_diff'] > 0:
         details.append("✅ MACD 柱狀體轉正"); score += 1
+    
+    # D. RSI 判斷
     if last['RSI'] > 50:
         details.append("✅ RSI 強勢區"); score += 1
+    
+    # E. 價格位置判斷
     if last['Close'] > last['BBM']:
         details.append("✅ 站穩月線(MA20)"); score += 1
 
+    # 決策對照表 (維持原等級)
     decision_map = {
         5: {"grade": "S (極強)", "action": "🔥 續抱/加碼", "color": "red"},
         4: {"grade": "A (強勢)", "action": "🚀 偏多持股", "color": "orange"},
@@ -118,7 +130,10 @@ def fetch_and_analyze(stock_id):
         1: {"grade": "D (弱勢)", "action": "📉 減碼避險", "color": "gray"},
         0: {"grade": "E (極弱)", "action": "🚫 觀望不進場", "color": "black"}
     }
-    res = decision_map.get(score)
+    
+    # 確保 score 不會超過 5
+    final_score = min(max(int(score), 0), 5)
+    res = decision_map.get(final_score)
 
     return {
         "price": float(last['Close']),
@@ -127,11 +142,11 @@ def fetch_and_analyze(stock_id):
         "action": res["action"],
         "color": res["color"],
         "details": details,
-        "score": score
+        "score": final_score
     }
 
 # --- 2. 介面 ---
-st.set_page_config(page_title="台股決策系統 V7.1", layout="centered")
+st.set_page_config(page_title="台股決策系統 V7.2", layout="centered")
 st.title("🤖 台股 AI 技術分級決策支援")
 
 with st.container(border=True):
