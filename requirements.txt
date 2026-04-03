@@ -6,4 +6,4 @@ requests
 pytz
 tqdm
 ta
-streamlit-cookies-manager
+extra-streamlit-components
