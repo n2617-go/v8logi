@@ -1,0 +1,7 @@
+streamlit
+pandas
+requests
+yfinance
+streamlit-cookies-manager
+requests-cache
+cryptography
