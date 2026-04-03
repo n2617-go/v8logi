@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -13,11 +12,11 @@ from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands
 
 # --- 0. 基礎設定 ---
-st.set_page_config(page_title="台股 AI 決策系統 V7.6", layout="centered")
+st.set_page_config(page_title="台股 AI 決策系統 V7.7", layout="centered")
 tw_tz = pytz.timezone('Asia/Taipei')
 fm_loader = DataLoader()
 
-# 初始化 session_state
+# 初始化 session_state，確保畫面不會空白
 if 'my_stocks' not in st.session_state:
     st.session_state.my_stocks = [{"id": "2330", "name": "台積電"}]
 if 'tg_token' not in st.session_state:
@@ -28,10 +27,10 @@ if 'tg_chat_id' not in st.session_state:
 # Cookie 管理
 cookies = CookieManager(prefix="twstock_")
 if not cookies.ready():
-    st.info("系統初始化中...")
+    st.info("🔄 正在連線至瀏覽器儲存區...")
     st.stop()
 
-# 載入 Cookie
+# 載入儲存的資料
 if 'cookie_loaded' not in st.session_state:
     raw = cookies.get("my_stocks")
     if raw:
@@ -47,8 +46,8 @@ def save_all_to_cookie():
     cookies["tg_chat_id"] = st.session_state.tg_chat_id
     cookies.save()
 
-# --- 1. 分析引擎 ---
-@st.cache_data(ttl=60) # 盤中建議快取時間縮短為 60 秒
+# --- 1. 分析引擎 (整合盤中/盤後邏輯) ---
+@st.cache_data(ttl=60)
 def fetch_and_analyze(stock_id):
     now_tw = datetime.now(tw_tz)
     # 判斷是否為台股交易時間 (週一至週五 09:00 - 13:35)
@@ -57,7 +56,7 @@ def fetch_and_analyze(stock_id):
     df = pd.DataFrame()
     for suffix in [".TW", ".TWO"]:
         try:
-            # 盤中抓取 1d (包含今天跳動價), 盤後抓取較長區間確保準確
+            # 使用 auto_adjust 確保 Close 欄位統一，排除 MultiIndex 困擾
             temp_df = yf.download(f"{stock_id}{suffix}", period="6mo", progress=False, auto_adjust=True)
             if not temp_df.empty and len(temp_df) > 20:
                 df = temp_df
@@ -66,13 +65,14 @@ def fetch_and_analyze(stock_id):
     
     if df.empty: return None
 
-    # 統一格式處理
+    # 強制修正欄位名稱與索引格式 (解決 7.1 版抓不到資料的問題)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.columns = [str(col).capitalize() for col in df.columns]
     df = df.ffill().astype(float)
 
     try:
+        # 將資料轉為一維 Series 確保 ta 套件計算穩定
         close = pd.Series(df['Close'].values.flatten(), index=df.index)
         high = pd.Series(df['High'].values.flatten(), index=df.index)
         low = pd.Series(df['Low'].values.flatten(), index=df.index)
@@ -84,32 +84,34 @@ def fetch_and_analyze(stock_id):
         
         stoch = StochasticOscillator(high, low, close, window=9, window_context=3)
         df['K'] = stoch.stoch(); df['D'] = stoch.stoch_signal()
+        
         df['MACD_diff'] = MACD(close).macd_diff()
         df['RSI'] = RSIIndicator(close).rsi()
         df['BBM'] = BollingerBands(close).bollinger_mavg()
         
-        # 取得最後兩筆資料
         last = df.iloc[-1]; prev = df.iloc[-2]
         score = 0
         details = []
 
-        # 1. 均線排列
+        # A. 均線排列判斷
         if last['MA5'] > last['MA10'] > last['MA20']:
             details.append("✅ 均線多頭"); score += 1
 
-        # 2. 進階 KD 判斷 (嚴格金叉)
+        # B. 【大回歸：進階 KD 判斷邏輯】
+        # 條件 1：嚴格金叉 (昨天 K<=D 且 今天 K>D)
         is_gold_cross = prev['K'] <= prev['D'] and last['K'] > last['D']
         if is_gold_cross:
+            # 條件 2：區間過濾 (25以下為🌟，50-80為✅)
             if last['K'] < 25:
                 details.append("🌟 低檔強勢金叉"); score += 1
             elif 50 <= last['K'] < 80:
                 details.append("✅ 轉強黃金交叉"); score += 1
         
-        # 3. 鈍化偵測
+        # 條件 3：低檔鈍化偵測 (警告)
         if (df['K'].iloc[-3:] < 20).all():
-            details.append("⚠️ 低檔鈍化")
+            details.append("⚠️ 低檔鈍化警告")
 
-        # 4. 其他指標
+        # C. MACD / D. RSI / E. 站上月線
         if last['MACD_diff'] > 0: details.append("✅ MACD轉正"); score += 1
         if last['RSI'] > 50: details.append("✅ RSI強勢"); score += 1
         if last['Close'] > last['BBM']: details.append("✅ 站上月線"); score += 1
@@ -122,61 +124,70 @@ def fetch_and_analyze(stock_id):
             1: {"grade": "D (弱勢)", "action": "📉 減碼避險", "color": "gray"},
             0: {"grade": "E (極弱)", "action": "🚫 觀望不進場", "color": "black"}
         }
-        res = decision_map.get(min(max(int(score), 0), 5))
-        
+        f_score = min(max(int(score), 0), 5)
+        res = decision_map.get(f_score)
+
         return {
             "price": float(last['Close']),
             "pct": (float(last['Close'])-float(prev['Close']))/float(prev['Close'])*100,
             "grade": res["grade"], "action": res["action"], "color": res["color"],
             "details": details,
-            "is_live": is_trading  # 標記是否為盤中即時資料
+            "is_live": is_trading
         }
     except: return None
 
-# --- 2. 介面 ---
-st.title("🤖 台股 AI 決策系統 (盤中即時整合版)")
+# --- 2. 介面與功能 ---
+st.title("🤖 台股 AI 決策系統 V7.7")
 
+# 新增股票 (整合 FinMind 自動查詢)
 with st.container(border=True):
     st.subheader("🔍 新增自選股票")
     c1, c2, c3 = st.columns([2,3,1.2])
-    input_id = c1.text_input("代號", key="add_id", placeholder="2330")
-    input_name = c2.text_input("名稱 (選填)", key="add_name")
+    input_id = c1.text_input("代號", key="add_id", placeholder="例如: 2454")
+    input_name = c2.text_input("名稱 (留空自動查詢)", key="add_name")
     
     if c3.button("➕ 新增", use_container_width=True):
         if input_id:
             final_name = input_name
             if not final_name:
-                try:
-                    info = fm_loader.taiwan_stock_info()
-                    final_name = info[info['stock_id'] == input_id]['stock_name'].values[0]
-                except: final_name = f"股票 {input_id}"
+                with st.spinner('FinMind 查詢名稱中...'):
+                    try:
+                        info = fm_loader.taiwan_stock_info()
+                        final_name = info[info['stock_id'] == input_id]['stock_name'].values[0]
+                    except: final_name = f"股票 {input_id}"
+            
             if not any(s['id'] == input_id for s in st.session_state.my_stocks):
                 st.session_state.my_stocks.append({"id": input_id, "name": final_name})
                 save_all_to_cookie(); st.rerun()
 
+# 側邊欄設定
 with st.sidebar:
-    st.header("⚙️ 系統狀態")
-    now_time = datetime.now(tw_tz).strftime("%H:%M:%S")
-    st.write(f"目前時間：{now_time}")
-    if st.button("🔄 手動刷新資料"):
-        st.cache_data.clear(); st.rerun()
+    st.header("⚙️ 系統設定")
+    st.session_state.tg_token = st.text_input("Telegram Token", type="password", value=st.session_state.tg_token)
+    st.session_state.tg_chat_id = st.text_input("Chat ID", value=st.session_state.tg_chat_id)
+    if st.button("💾 儲存設定"):
+        save_all_to_cookie(); st.success("設定已儲存")
+    st.divider()
+    st.write(f"目前伺服器時間：\n{datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')}")
 
-# --- 3. 顯示卡片 ---
+# --- 3. 顯示股票清單 ---
 st.divider()
 for idx, stock in enumerate(list(st.session_state.my_stocks)):
     res = fetch_and_analyze(stock['id'])
     with st.container(border=True):
         if res:
-            col1, col2, col3 = st.columns([3, 2, 0.6])
-            with col1:
-                live_tag = "🔴 盤中" if res.get("is_live") else "⚪ 盤後"
-                st.write(f"### {stock['name']} ({stock['id']}) {live_tag}")
+            c_info, c_met, c_del = st.columns([3, 2, 0.6])
+            with c_info:
+                # 顯示盤中/盤後標籤
+                status_tag = "🔴 盤中即時" if res['is_live'] else "⚪ 盤後數據"
+                st.write(f"### {stock['name']} ({stock['id']})")
+                st.caption(status_tag)
                 st.markdown(f"評級：`{res['grade']}`")
                 st.markdown(f"**決策：<span style='color:{res['color']}'>{res['action']}</span>**", unsafe_allow_html=True)
-                st.caption(" | ".join(res['details']) if res['details'] else "無顯著訊號")
-            with col2:
-                st.metric("目前價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
-            with col3:
+                st.caption("符合指標：" + (" | ".join(res['details']) if res['details'] else "無顯著訊號"))
+            with c_met:
+                st.metric("股價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
+            with c_del:
                 if st.button("🗑️", key=f"del_{stock['id']}"):
                     st.session_state.my_stocks.pop(idx)
                     save_all_to_cookie(); st.rerun()
@@ -185,3 +196,6 @@ for idx, stock in enumerate(list(st.session_state.my_stocks)):
             if st.button("🗑️ 刪除", key=f"err_{stock['id']}"):
                 st.session_state.my_stocks.pop(idx)
                 save_all_to_cookie(); st.rerun()
+
+if st.button("🔄 全部重新整理"):
+    st.cache_data.clear(); st.rerun()
