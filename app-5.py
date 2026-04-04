@@ -336,7 +336,7 @@ def fetch_and_analyze(stock_id: str):
 # --- 10. 介面 ---
 # ===========================================================================
 st.set_page_config(page_title="台股決策系統 V7.3", layout="centered")
-st.title("🤖 賓哥的 AI 技術決策支援")
+st.title("🤖  技術決策支援")
 
 # 注入 browser_id JS（高度 0，使用者看不到）
 # 只在尚未取得 browser_id 時執行，避免無限 reload
