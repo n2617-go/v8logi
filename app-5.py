@@ -13,10 +13,8 @@ from ta.volatility import BollingerBands
 
 # ── Cookie 管理（每個瀏覽器獨立清單）───────────────────────────────────────
 try:
-    from streamlit_cookies_manager import CookieManager
-    cookies = CookieManager()
-    if not cookies.ready():
-        st.stop()
+    import extra_streamlit_components as stx
+    cookie_manager = stx.CookieManager()
     COOKIE_AVAILABLE = True
 except ImportError:
     COOKIE_AVAILABLE = False
@@ -52,21 +50,27 @@ def today_str() -> str:
 def load_stocks_from_cookie():
     if not COOKIE_AVAILABLE:
         return list(DEFAULT_STOCKS)
-    raw = cookies.get(COOKIE_KEY)
-    if raw:
-        try:
+    try:
+        raw = cookie_manager.get(cookie=COOKIE_KEY)
+        if raw:
             data = json.loads(raw)
             if isinstance(data, list):
                 return data
-        except Exception:
-            pass
+    except Exception:
+        pass
     return list(DEFAULT_STOCKS)
 
 
 def save_stocks_to_cookie(stocks):
     if COOKIE_AVAILABLE:
-        cookies[COOKIE_KEY] = json.dumps(stocks, ensure_ascii=False)
-        cookies.save()
+        try:
+            cookie_manager.set(
+                cookie=COOKIE_KEY,
+                val=json.dumps(stocks, ensure_ascii=False),
+                expires_at=datetime.now(tw_tz).replace(year=datetime.now(tw_tz).year + 1),
+            )
+        except Exception:
+            pass
 
 
 # ── Telegram + FinMind Token（伺服器端共用）──────────────────────────────
