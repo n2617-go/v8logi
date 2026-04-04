@@ -94,20 +94,26 @@ def save_tg_config():
         }, f, ensure_ascii=False, indent=4)
 
 
-# ── session_state 初始化 ─────────────────────────────────────────────────────
+# ── session_state 初始化（非 cookie 部分，只跑一次）──────────────────────────
 if "initialized" not in st.session_state:
     tg_cfg = load_tg_config()
     st.session_state.update({
-        "my_stocks":      load_stocks_from_cookie(),
+        "my_stocks":      list(DEFAULT_STOCKS),  # 暫時預設，下方 cookie 同步會覆蓋
         "tg_token":       tg_cfg["tg_token"],
         "tg_chat_id":     tg_cfg["tg_chat_id"],
         "tg_threshold":   tg_cfg["tg_threshold"],
         "finmind_token":  tg_cfg.get("finmind_token", ""),
         "initialized":    True,
         "alert_history":  {},
-        # 歷史快取字典：{ stock_id: {"df": DataFrame, "cached_date": "YYYY-MM-DD"} }
         "hist_cache":     {},
     })
+
+# ── 每次頁面載入都從 cookie 同步股票清單 ────────────────────────────────────
+# CookieManager 需在頁面 render 後才能讀值，不能放在 initialized 區塊內
+_cookie_stocks = load_stocks_from_cookie()
+# cookie 有資料時才覆蓋（避免 cookie 尚未寫入時洗掉記憶體內的清單）
+if _cookie_stocks != list(DEFAULT_STOCKS):
+    st.session_state.my_stocks = _cookie_stocks
 
 
 # ===========================================================================
