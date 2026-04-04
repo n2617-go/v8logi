@@ -104,16 +104,21 @@ if "initialized" not in st.session_state:
         "tg_threshold":   tg_cfg["tg_threshold"],
         "finmind_token":  tg_cfg.get("finmind_token", ""),
         "initialized":    True,
+        "cookie_loaded":  False,   # 控制 cookie 只在 session 首次建立時讀取
         "alert_history":  {},
         "hist_cache":     {},
     })
 
-# ── 每次頁面載入都從 cookie 同步股票清單 ────────────────────────────────────
-# CookieManager 需在頁面 render 後才能讀值，不能放在 initialized 區塊內
-_cookie_stocks = load_stocks_from_cookie()
-# cookie 有資料時才覆蓋（避免 cookie 尚未寫入時洗掉記憶體內的清單）
-if _cookie_stocks != list(DEFAULT_STOCKS):
-    st.session_state.my_stocks = _cookie_stocks
+# ── 首次載入時從 cookie 還原股票清單 ────────────────────────────────────────
+# 用 cookie_loaded 旗標確保：
+#   - 第一次載入（session 全新）→ 從 cookie 讀取並還原
+#   - st.rerun() 觸發的重跑    → 跳過，保留 session_state 內已修改的清單
+#   （避免 cookie 非同步寫入導致 rerun 時讀到舊值把清單蓋掉）
+if not st.session_state.get("cookie_loaded", False):
+    _cookie_stocks = load_stocks_from_cookie()
+    if _cookie_stocks:
+        st.session_state.my_stocks = _cookie_stocks
+    st.session_state.cookie_loaded = True
 
 
 # ===========================================================================
